@@ -18,7 +18,7 @@ const postsData = ref<Post[]>([])
 // Initialisation de la base de données
 const initDatabase = () => {
   console.log('=> Connexion à la base de données');
-  const db = new PouchDB('http://admin:admin@localhost:5984/database')
+  const db = new PouchDB('http://admin:admin@localhost:5984/test_infradonn2')
   if (db) {
     console.log("Connecté à la collection : " + db?.name)
     storage.value = db
@@ -28,13 +28,27 @@ const initDatabase = () => {
 }
 
 // Récupération des données
-const fetchData = () => {
-  // TODO Récupération des données
-  // https://pouchdb.com/api.html#batch_fetch
-  // Regarder l'exemple avec function allDocs
-  // Remplir le tableau postsData avec les données récupérées
+const fetchData = async () => {
+  if (!storage.value) {
+    console.warn('Base de données non initialisée');
+    return;
+  }
+ 
+  try {
+    console.log('=> Récupération des données...');
+    const result = await storage.value.allDocs({ include_docs: true });
+ 
+    // On remplit postsData avec les documents récupérés
+    postsData.value = result.rows
+      .filter((row: any) => !!row.doc)
+      .map((row: any) => row.doc as Post);
+ 
+    console.log('Données récupérées :', postsData.value);
+  } catch (err) {
+    console.error('Erreur lors du fetch des données :', err);
+  }
 }
-
+ 
 onMounted(() => {
   console.log('=> Composant initialisé');
   initDatabase()
