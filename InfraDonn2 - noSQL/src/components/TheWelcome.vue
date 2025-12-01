@@ -41,23 +41,46 @@
       <button @click="clearSearch">Effacer</button>
     </section>
 
-    <h2>Posts ({{ filteredPosts.length }})</h2>
-    <div v-if="filteredPosts.length === 0" class="empty">Aucun post</div>
+    <h2>Posts ({{ posts.length }})</h2>
 
-    <article v-for="post in filteredPosts" :key="post._id" class="post">
+    <div v-if="filteredPosts.length > 10 || showAllPosts" class="buttons" style="margin-bottom: 0.5rem;">
+      <button @click="toggleShowAll">
+        {{ showAllPosts ? 'Afficher uniquement le Top 10' : 'Afficher tous les posts' }}
+      </button>
+    </div>
+
+    <div v-if="displayedPosts.length === 0" class="empty">Aucun post</div>
+
+    <article v-for="post in displayedPosts" :key="post._id" class="post">
       <h3>{{ post.title }}</h3>
       <p class="content">{{ post.content }}</p>
       <p class="meta">
         <strong>{{ post.author }}</strong> - {{ post.date }} • <em>{{ post.likes || 0 }} Likes</em>
       </p>
+
+      <!-- Premier commentaire automatique, avec style séparé -->
+      <div
+        v-if="commentsByPost(post._id)?.length > 0"
+        class="first-comment"
+      >
+        <p><strong>Premier commentaire :</strong></p>
+        <p>{{ commentsByPost(post._id)?.[0]?.content }}</p>
+        <p class="first-comment-footer">
+          <strong>{{ commentsByPost(post._id)?.[0]?.author }}</strong> -
+          {{ commentsByPost(post._id)?.[0]?.date }}
+        </p>
+      </div>
+
       <div class="post-actions buttons">
         <button @click="updatePost(post)">Modifier</button>
         <button @click="deletePost(post)">Supprimer</button>
         <button @click="likePost(post)">Like</button>
         <button @click="openComments(post)">Commentaires ({{ countComments(post._id) }})</button>
       </div>
+
       <section v-if="activeCommentsPostId === post._id" class="comments">
         <h4>Commentaires</h4>
+
         <div v-for="c in commentsByPost(post._id)" :key="c._id" class="comment">
           <div class="comment-cartouche">
             <p>{{ c.content }}</p>
@@ -68,6 +91,7 @@
             </div>
           </div>
         </div>
+
         <div class="add-comment">
           <input v-model="newComment.author" placeholder="Auteur" />
           <textarea v-model="newComment.content" rows="2" placeholder="Commentaire"></textarea>
@@ -91,7 +115,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import PouchDB from 'pouchdb'
 
 interface Post {
@@ -135,6 +159,12 @@ const activeCommentsPostId = ref<string | null>(null)
 const factoryCount = ref<number>(50)
 const searchQuery = ref('')
 const sortBy = ref('none')
+
+const showAllPosts = ref(false)
+
+const displayedPosts = computed(() => {
+  return showAllPosts.value ? filteredPosts.value : filteredPosts.value.slice(0, 10)
+})
 
 const initDB = async () => {
   localDB.value = new PouchDB('posts_local')
@@ -367,6 +397,7 @@ const generateFactory = async () => {
 
 const applySearchSort = async () => {
   let list = [...posts.value]
+
   const q = searchQuery.value.trim().toLowerCase()
   if (q) {
     list = list.filter(
@@ -375,18 +406,26 @@ const applySearchSort = async () => {
         (p.author && p.author.toLowerCase().includes(q))
     )
   }
+
   if (sortBy.value === 'likes_desc') {
     list.sort((a, b) => (b.likes || 0) - (a.likes || 0))
   } else if (sortBy.value === 'likes_asc') {
     list.sort((a, b) => (a.likes || 0) - (b.likes || 0))
   }
+
   filteredPosts.value = list
+  showAllPosts.value = false
 }
 
 const clearSearch = async () => {
   searchQuery.value = ''
   sortBy.value = 'none'
   await fetchAllLocal()
+  showAllPosts.value = false
+}
+
+const toggleShowAll = () => {
+  showAllPosts.value = !showAllPosts.value
 }
 
 onMounted(() => { initDB() })
@@ -478,7 +517,6 @@ input, textarea, select {
   text-align: center;
   color: #888;
 }
-/* Barre info des posts */
 .meta {
   background: #f6f8fb;
   font-size: 0.97rem;
@@ -490,7 +528,22 @@ input, textarea, select {
   border-radius: 0 0 7px 7px;
   letter-spacing: .04em;
 }
-/* Commentaires démarqués */
+
+/* Bloc premier commentaire */
+.first-comment {
+  margin: 0.8rem 0;
+  padding: 0.8rem 1rem 0.6rem 1rem;
+  background: #f0f6ff;
+  border-left: 4px solid #1e74ff;
+  border-radius: 7px;
+}
+.first-comment-footer {
+  margin-top: 0.4rem;
+  font-size: 0.95rem;
+  color: #3a4e71;
+  font-style: italic;
+}
+
 .comments {
   background: #eaf3fa;
   padding: 1rem 0.7rem 0.7rem 0.7rem;
@@ -517,7 +570,6 @@ input, textarea, select {
 .add-comment button {
   margin-top: 0.3rem;
 }
-/* Nouveau post form - meilleure mise en page */
 .form {
   background: #eff5fa;
   padding: 1.1rem .7rem .9rem .7rem;
