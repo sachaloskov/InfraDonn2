@@ -2,15 +2,20 @@
   <div class="container">
     <h1>Gestion des posts</h1>
 
+    <!-- panneau pour gérer la synchro online/offline -->
     <div class="sync-panel">
       <h3>Synchronisation</h3>
       <p>
         Statut:
+        <strong v-if="isOffline" class="error">
+          Offline
+        </strong>
         <strong
+          v-else
           :class="{
-            success: syncStatus.includes('✓'),
+            success: syncStatus.includes('✓') || syncStatus === 'Live sync',
             error: syncStatus.includes('✗'),
-            pending: !syncStatus.includes('✓') && !syncStatus.includes('✗'),
+            pending: !syncStatus.includes('✓') && !syncStatus.includes('✗') && syncStatus !== 'Live sync',
           }"
         >
           {{ syncStatus }}
@@ -18,10 +23,10 @@
       </p>
       <div class="buttons">
         <button @click="toggleOffline">{{ isOffline ? 'Passer en ligne' : 'Passer Offline' }}</button>
-        <button @click="syncBidirectional" :disabled="isSyncing || isOffline">Sync manuelle</button>
       </div>
     </div>
 
+    <!-- génération automatique de plusieurs posts -->
     <section class="factory">
       <h3>Factory</h3>
       <div class="factory-controls">
@@ -30,6 +35,7 @@
       </div>
     </section>
 
+    <!-- barre de recherche et tri des posts -->
     <section class="search-panel">
       <input v-model="searchQuery" placeholder="Recherche titre ou auteur..." @keyup.enter="applySearchSort" />
       <select v-model="sortBy">
@@ -43,21 +49,33 @@
 
     <h2>Posts ({{ filteredPosts.length }})</h2>
 
+    <!-- bouton pour limiter l’affichage à 10 posts -->
     <div v-if="filteredPosts.length > 10 || showAllPosts" class="buttons" style="margin-bottom: 0.5rem;">
       <button @click="toggleShowAll">
         {{ showAllPosts ? 'Afficher uniquement le Top 10' : 'Afficher tous les posts' }}
       </button>
     </div>
 
-    <div v-if="displayedPosts.length === 0" class="empty">Aucun post</div>
+    <!-- message quand il n'y a aucun post -->
+    <div v-if="displayedPostsWithMedia.length === 0" class="empty">Aucun post</div>
 
-    <article v-for="post in displayedPosts" :key="post._id" class="post">
+    <!-- affichage de chaque post -->
+    <article v-for="post in displayedPostsWithMedia" :key="post._id" class="post">
       <h3>{{ post.title }}</h3>
       <p class="content">{{ post.content }}</p>
       <p class="meta">
         <strong>{{ post.author }}</strong> - {{ post.date }} • <em>{{ post.likes || 0 }} Likes</em>
       </p>
 
+      <!-- affichage du média lié au post -->
+      <div v-if="postMedia(post._id)" class="post-media-display">
+        <h4>Média associé</h4>
+        <img v-if="isImage(postMedia(post._id)?.type || '')" :src="postMedia(post._id)?.url" :alt="postMedia(post._id)?.name || ''" class="responsive-media-img">
+        <video v-else-if="isVideo(postMedia(post._id)?.type || '')" :src="postMedia(post._id)?.url" controls class="responsive-media-video" :title="postMedia(post._id)?.name || ''"></video>
+        <p v-else class="media-info">Fichier: {{ postMedia(post._id)?.name || 'Nom inconnu' }} (Type: {{ postMedia(post._id)?.type || 'Inconnu' }})</p>
+      </div>
+
+      <!-- aperçu du premier commentaire du post -->
       <div
         v-if="commentsByPost(post._id)?.length > 0"
         class="first-comment"
@@ -70,13 +88,22 @@
         </p>
       </div>
 
+      <!-- actions principales sur le post -->
       <div class="post-actions buttons">
         <button @click="updatePost(post)">Modifier</button>
         <button @click="deletePost(post)">Supprimer</button>
         <button @click="likePost(post)">Like</button>
         <button @click="openComments(post)">Commentaires ({{ countComments(post._id) }})</button>
+
+        <!-- boutons de gestion du média -->
+        <label class="media-upload-button">
+          Ajouter/Remplacer Média
+          <input type="file" @change="handleFileSelect($event, post._id)" style="display: none;" />
+        </label>
+        <button v-if="postMedia(post._id)" @click="deleteMediaAttachment(post)">Supprimer Média</button>
       </div>
 
+      <!-- bloc de gestion des commentaires -->
       <section v-if="activeCommentsPostId === post._id" class="comments">
         <h4>Commentaires</h4>
 
@@ -91,6 +118,7 @@
           </div>
         </div>
 
+        <!-- formulaire d’ajout d’un commentaire -->
         <div class="add-comment">
           <input v-model="newComment.author" placeholder="Auteur" />
           <textarea v-model="newComment.content" rows="2" placeholder="Commentaire"></textarea>
@@ -101,6 +129,7 @@
 
     <hr />
 
+    <!-- formulaire pour créer un nouveau post -->
     <h2>Nouveau post</h2>
     <form class="form" @submit.prevent="createPost">
       <div class="form-row">
@@ -111,48 +140,47 @@
       <button type="submit">Publier</button>
     </form>
 
-    <div v-if="conflictToResolve" class="conflict-modal-overlay" @click.self="closeConflictModal">
+    <!-- fenêtre modale quand il y a un conflit de synchro -->
+    <div v-if="conflictToResolve" class="conflict-modal-overlay">
       <div class="conflict-modal">
         <h2>Conflit détecté</h2>
         <p class="conflict-info">
-          Un conflit a été détecté pour le document <strong>{{ getDocumentType(conflictToResolve.current) }}</strong>.
+          Un conflit a été détecté !
           <br>Veuillez choisir la version à conserver :
         </p>
 
         <div class="conflict-versions">
-          <div class="version-card">
-            <h3>Version locale (Application)</h3>
+          <!-- version locale (ou choisie comme locale) -->
+          <div class="version-card local-version">
+            <h3>Version 1</h3>
             <div class="version-details">
-              <p v-if="conflictToResolve.current.title"><strong>Titre :</strong> {{ conflictToResolve.current.title }}</p>
-              <p v-if="conflictToResolve.current.content"><strong>Contenu :</strong> {{ conflictToResolve.current.content }}</p>
-              <p v-if="conflictToResolve.current.author"><strong>Auteur :</strong> {{ conflictToResolve.current.author }}</p>
-              <p v-if="conflictToResolve.current.date"><strong>Date :</strong> {{ conflictToResolve.current.date }}</p>
-              <p v-if="conflictToResolve.current.likes !== undefined"><strong>Likes :</strong> {{ conflictToResolve.current.likes }}</p>
-              <p class="version-rev"><strong>Révision :</strong> {{ conflictToResolve.current._rev }}</p>
+              <p v-if="conflictToResolve.local.title"><strong>Titre :</strong> {{ conflictToResolve.local.title }}</p>
+              <p v-if="conflictToResolve.local.content"><strong>Contenu :</strong> {{ conflictToResolve.local.content }}</p>
+              <p v-if="conflictToResolve.local.author"><strong>Auteur :</strong> {{ conflictToResolve.local.author }}</p>
+              <p v-if="conflictToResolve.local.date"><strong>Date :</strong> {{ conflictToResolve.local.date }}</p>
+              <p v-if="conflictToResolve.local.likes !== undefined"><strong>Likes :</strong> {{ conflictToResolve.local.likes }}</p>
+              <p class="version-rev"><strong>Révision :</strong> {{ conflictToResolve.local._rev }}</p>
             </div>
             <button class="btn-keep-local" @click="keepLocalVersion">
-              Garder cette version (Locale)
+              ✓ Garder cette version
             </button>
           </div>
 
-          <div class="version-card">
-            <h3>Version distante (Base de données)</h3>
+          <!-- version distante (ou considérée comme distante) -->
+          <div class="version-card remote-version">
+            <h3>Version 2</h3>
             <div class="version-details">
-              <p v-if="conflictToResolve.conflicting.title"><strong>Titre :</strong> {{ conflictToResolve.conflicting.title }}</p>
-              <p v-if="conflictToResolve.conflicting.content"><strong>Contenu :</strong> {{ conflictToResolve.conflicting.content }}</p>
-              <p v-if="conflictToResolve.conflicting.author"><strong>Auteur :</strong> {{ conflictToResolve.conflicting.author }}</p>
-              <p v-if="conflictToResolve.conflicting.date"><strong>Date :</strong> {{ conflictToResolve.conflicting.date }}</p>
-              <p v-if="conflictToResolve.conflicting.likes !== undefined"><strong>Likes :</strong> {{ conflictToResolve.conflicting.likes }}</p>
-              <p class="version-rev"><strong>Révision :</strong> {{ conflictToResolve.conflicting._rev }}</p>
+              <p v-if="conflictToResolve.remote.title"><strong>Titre :</strong> {{ conflictToResolve.remote.title }}</p>
+              <p v-if="conflictToResolve.remote.content"><strong>Contenu :</strong> {{ conflictToResolve.remote.content }}</p>
+              <p v-if="conflictToResolve.remote.author"><strong>Auteur :</strong> {{ conflictToResolve.remote.author }}</p>
+              <p v-if="conflictToResolve.remote.date"><strong>Date :</strong> {{ conflictToResolve.remote.date }}</p>
+              <p v-if="conflictToResolve.remote.likes !== undefined"><strong>Likes :</strong> {{ conflictToResolve.remote.likes }}</p>
+              <p class="version-rev"><strong>Révision :</strong> {{ conflictToResolve.remote._rev }}</p>
             </div>
             <button class="btn-keep-remote" @click="keepRemoteVersion">
-              Garder cette version (Distante)
+              ✓ Garder cette version
             </button>
           </div>
-        </div>
-
-        <div class="conflict-actions">
-          <button class="btn-cancel" @click="closeConflictModal">Annuler (garder locale par défaut)</button>
         </div>
       </div>
     </div>
@@ -160,12 +188,14 @@
 </template>
 
 <script setup lang="ts">
+// imports Vue + PouchDB
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import PouchDB from 'pouchdb'
 import PouchFind from 'pouchdb-find'
 
 PouchDB.plugin(PouchFind)
 
+// interface d'un post
 interface Post {
   _id?: string
   _rev?: string
@@ -175,8 +205,10 @@ interface Post {
   content: string
   date: string
   likes?: number
+  _attachments?: PouchDB.Core.Attachments
 }
 
+// interface d'un commentaire
 interface CommentDoc {
   _id?: string
   _rev?: string
@@ -187,26 +219,31 @@ interface CommentDoc {
   date: string
 }
 
+// structure pour gérer un conflit
 interface ConflictResolution {
-  current: any
-  conflicting: any
-  conflictRev: string
+  docId: string
+  local: any
+  remote: any
+  allRevs: string[]
 }
 
+// refs vers les bases locale et distante
 const localDB = ref<any | null>(null)
 const remoteDB = ref<any | null>(null)
 const remoteUrl = 'http://admin:admin@localhost:5984/test_infradonn2'
 
+// listes de posts et commentaires
 const posts = ref<Post[]>([])
 const comments = ref<CommentDoc[]>([])
 const filteredPosts = ref<Post[]>([])
 const syncStatus = ref<string>('Initialisation...')
-const isSyncing = ref<boolean>(false)
 let liveSync: any = null
 let changesFeed: any = null
 
+// mode offline activé ou non
 const isOffline = ref(false)
 
+// données du nouveau post / commentaire
 const newPost = ref<Post>({ title: '', author: '', content: '', date: new Date().toLocaleString(), likes: 0 })
 const newComment = ref<any>({ author: '', content: '' })
 const activeCommentsPostId = ref<string | null>(null)
@@ -214,43 +251,86 @@ const factoryCount = ref<number>(50)
 const searchQuery = ref('')
 const sortBy = ref('none')
 
+// contrôle de l’affichage (top 10 ou tout)
 const showAllPosts = ref(false)
 
+// gestion des conflits de docs
 const conflictToResolve = ref<ConflictResolution | null>(null)
 const conflictQueue = ref<ConflictResolution[]>([])
 
-const displayedPosts = computed(() => {
-  return showAllPosts.value ? filteredPosts.value : filteredPosts.value.slice(0, 10)
-})
+// suivi des révisions modifiées en local
+const locallyModifiedRevs = ref(new Map<string, string>())
 
-const getDocumentType = (doc: any) => {
-  if (doc.type === 'post') return `Post "${doc.title || 'Sans titre'}"`
-  if (doc.type === 'comment') return `Commentaire`
-  return 'Document'
+// map idPost -> données de média
+const attachmentsData = ref(new Map<string, { url: string, name: string, type: string }>())
+
+// ensemble des conflits déjà traités
+const processedConflicts = ref(new Set<string>())
+
+// récupère le média associé à un post
+const postMedia = (postId?: string) => {
+  if (!postId) return null
+  return attachmentsData.value.get(postId)
 }
 
+// helpers pour tester le type de fichier
+const isImage = (type: string) => type.startsWith('image/')
+const isVideo = (type: string) => type.startsWith('video/')
+
+// charge l'attachement d'un post depuis PouchDB
+const loadAttachmentForPost = async (post: Post) => {
+  if (!localDB.value || !post._id || !post._attachments) return
+  if (attachmentsData.value.has(post._id)) return
+
+  const attachmentNames = Object.keys(post._attachments)
+  if (attachmentNames.length === 0) return
+
+  const attachmentName = attachmentNames[0]
+
+  try {
+    const blob = await localDB.value.getAttachment(post._id, attachmentName)
+    if (blob) {
+      const url = URL.createObjectURL(blob)
+      attachmentsData.value.set(post._id, {
+        url,
+        name: attachmentName!,
+        type: blob.type!
+      })
+    }
+  } catch (e) {
+    console.error("Erreur lors du chargement de l'attachement pour le post", post._id, ":", e)
+  }
+}
+
+// posts affichés (top 10 ou tout) + chargement des médias
+const displayedPostsWithMedia = computed(() => {
+  const postsToDisplay = showAllPosts.value ? filteredPosts.value : filteredPosts.value.slice(0, 10)
+  postsToDisplay.forEach(post => {
+    if (post._attachments && Object.keys(post._attachments).length > 0) {
+      loadAttachmentForPost(post)
+    }
+  })
+  return postsToDisplay
+})
+
+// création des index PouchDB (recherche/tri)
 const initIndexes = async () => {
   if (!localDB.value) return
   
   await localDB.value.createIndex({
-    index: {
-      fields: ['type', 'likes']
-    }
+    index: { fields: ['type', 'likes'] }
   })
   
   await localDB.value.createIndex({
-    index: {
-      fields: ['type', 'title', 'author']
-    }
+    index: { fields: ['type', 'title', 'author'] }
   })
   
   await localDB.value.createIndex({
-    index: {
-      fields: ['type', 'postId']
-    }
+    index: { fields: ['type', 'postId'] }
   })
 }
 
+// init de la base locale + sync initiale
 const initDB = async () => {
   localDB.value = new PouchDB('posts_local')
   remoteDB.value = new PouchDB(remoteUrl)
@@ -266,12 +346,11 @@ const initDB = async () => {
   }
   
   await fetchAllLocalFromDB()
-  
   startLiveSync()
-  
   watchLocalChanges()
 }
 
+// récupère tous les posts + commentaires de la base locale
 const fetchAllLocalFromDB = async () => {
   if (!localDB.value) return
   try {
@@ -293,10 +372,16 @@ const fetchAllLocalFromDB = async () => {
     })
     comments.value = commentsResult.docs as CommentDoc[]
     
+    attachmentsData.value.forEach(data => URL.revokeObjectURL(data.url))
+    attachmentsData.value.clear()
+
     await applySearchSort()
-  } catch (e) {}
+  } catch (e) {
+    console.error("Erreur lors de la récupération de toutes les données locales:", e)
+  }
 }
 
+// écoute les changements locaux (live) pour MAJ l'affichage
 const watchLocalChanges = () => {
   if (!localDB.value) return
   if (changesFeed && changesFeed.cancel) changesFeed.cancel()
@@ -315,27 +400,82 @@ const watchLocalChanges = () => {
     })
 }
 
+// quand un conflit est détecté, on prépare les 2 versions
 const handleConflictDetected = async (doc: any) => {
   if (!localDB.value || !doc._conflicts || doc._conflicts.length === 0) return
 
+  const docId = doc._id
+  
+  const conflictKey = `${docId}:${doc._rev}:${doc._conflicts.join(',')}`
+  
+  if (processedConflicts.value.has(conflictKey)) {
+    return
+  }
+  processedConflicts.value.add(conflictKey)
+
   try {
+    const winnerDoc = doc
+    
     const conflictRev = doc._conflicts[0]
-    const conflictingDoc = await localDB.value.get(doc._id, { rev: conflictRev })
+    const loserDoc = await localDB.value.get(docId, { rev: conflictRev })
+
+    const localRev = locallyModifiedRevs.value.get(docId)
+    
+    let localDoc: any
+    let remoteDoc: any
+    
+    const getRevNum = (rev: string | undefined): number => {
+      if (!rev) return 0
+      const parts = rev.split('-')
+      return parts[0] ? parseInt(parts[0], 10) : 0
+    }
+    
+    if (localRev && typeof localRev === 'string') {
+      const winnerRevNum = getRevNum(winnerDoc._rev)
+      const loserRevNum = getRevNum(loserDoc._rev)
+      const localRevNum = getRevNum(localRev)
+      
+      if (Math.abs(winnerRevNum - localRevNum) <= Math.abs(loserRevNum - localRevNum)) {
+        localDoc = winnerDoc
+        remoteDoc = loserDoc
+      } else {
+        localDoc = loserDoc
+        remoteDoc = winnerDoc
+      }
+    } else {
+      const winnerDate = new Date(winnerDoc.date || 0).getTime()
+      const loserDate = new Date(loserDoc.date || 0).getTime()
+      
+      if (winnerDate >= loserDate) {
+        localDoc = winnerDoc
+        remoteDoc = loserDoc
+      } else {
+        localDoc = loserDoc
+        remoteDoc = winnerDoc
+      }
+    }
+
+    const allRevs = [winnerDoc._rev, ...doc._conflicts]
 
     const conflict: ConflictResolution = {
-      current: doc,
-      conflicting: conflictingDoc,
-      conflictRev
+      docId,
+      local: localDoc,
+      remote: remoteDoc,
+      allRevs
     }
 
     conflictQueue.value.push(conflict)
-
+    
     if (!isOffline.value && !conflictToResolve.value) {
       showNextConflict()
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error("Erreur lors de la détection du conflit:", e)
+    processedConflicts.value.delete(conflictKey)
+  }
 }
 
+// affiche le prochain conflit de la file
 const showNextConflict = () => {
   if (conflictQueue.value.length > 0) {
     conflictToResolve.value = conflictQueue.value.shift() || null
@@ -344,59 +484,93 @@ const showNextConflict = () => {
   }
 }
 
+// l'utilisateur choisit de garder la version locale
 const keepLocalVersion = async () => {
   if (!conflictToResolve.value || !localDB.value) return
-  
+
   try {
-    await localDB.value.remove(
-      conflictToResolve.value.current._id,
-      conflictToResolve.value.conflictRev
-    )
+    const { docId, local } = conflictToResolve.value
     
+    const docsToUpdate: any[] = []
+    
+    const versionToKeep = { ...local }
+    delete versionToKeep._conflicts
+    
+    const currentDoc = await localDB.value.get(docId, { conflicts: true })
+    versionToKeep._rev = currentDoc._rev
+    
+    docsToUpdate.push(versionToKeep)
+    
+    if (currentDoc._conflicts) {
+      for (const rev of currentDoc._conflicts) {
+        docsToUpdate.push({
+          _id: docId,
+          _rev: rev,
+          _deleted: true
+        })
+      }
+    }
+    
+    await localDB.value.bulkDocs(docsToUpdate)
+    
+    const updatedDoc = await localDB.value.get(docId)
+    locallyModifiedRevs.value.set(docId, updatedDoc._rev)
+
     syncStatus.value = 'Conflit résolu (version locale conservée) ✓'
-    
     showNextConflict()
-    
     await fetchAllLocalFromDB()
   } catch (e) {
+    console.error("Erreur lors de la conservation de la version locale:", e)
     syncStatus.value = 'Erreur résolution conflit ✗'
   }
 }
 
+// l'utilisateur choisit de garder la version distante
 const keepRemoteVersion = async () => {
   if (!conflictToResolve.value || !localDB.value) return
-  
+
   try {
-    const remoteDoc = conflictToResolve.value.conflicting
-    const currentDoc = conflictToResolve.value.current
+    const { docId, remote } = conflictToResolve.value
     
-    await localDB.value.remove(
-      currentDoc._id,
-      conflictToResolve.value.conflictRev
-    )
+    const currentDoc = await localDB.value.get(docId, { conflicts: true })
     
-    remoteDoc._rev = currentDoc._rev
-    await localDB.value.put(remoteDoc)
+    const docsToUpdate: any[] = []
     
+    const versionToKeep = { ...remote }
+    delete versionToKeep._conflicts
+    versionToKeep._rev = currentDoc._rev
+    
+    docsToUpdate.push(versionToKeep)
+    
+    if (currentDoc._conflicts) {
+      for (const rev of currentDoc._conflicts) {
+        docsToUpdate.push({
+          _id: docId,
+          _rev: rev,
+          _deleted: true
+        })
+      }
+    }
+    
+    await localDB.value.bulkDocs(docsToUpdate)
+    
+    const updatedDoc = await localDB.value.get(docId)
+    locallyModifiedRevs.value.set(docId, updatedDoc._rev)
+
     syncStatus.value = 'Conflit résolu (version distante conservée) ✓'
-    
     showNextConflict()
-    
     await fetchAllLocalFromDB()
   } catch (e) {
+    console.error("Erreur lors de la conservation de la version distante:", e)
     syncStatus.value = 'Erreur résolution conflit ✗'
   }
 }
 
-const closeConflictModal = async () => {
-  await keepLocalVersion()
-}
-
+// démarre la synchro live avec la base distante
 const startLiveSync = () => {
   if (!localDB.value || !remoteDB.value || isOffline.value) return
   stopLiveSync()
   
-  isSyncing.value = true
   syncStatus.value = 'Démarrage live sync...'
   
   liveSync = localDB.value.sync(remoteDB.value, { 
@@ -422,27 +596,26 @@ const startLiveSync = () => {
       if (err) {
         syncStatus.value = 'Pause (erreur) ✗'
       } else {
-        syncStatus.value = 'Live sync actif (à jour)'
+        syncStatus.value = 'Live sync'
       }
-      isSyncing.value = false
     })
     .on('active', () => {
       syncStatus.value = 'Synchronisation en cours...'
-      isSyncing.value = true
     })
-    .on('denied', () => {
-      syncStatus.value = 'Refusé ✗'
+    .on('denied', (err: any) => {
+      console.error("Sync denied:", err)
+      syncStatus.value = 'Accès à la BDD distante refusé ✗'
     })
     .on('complete', () => {
       syncStatus.value = 'Sync complete'
-      isSyncing.value = false
     })
-    .on('error', () => {
-      syncStatus.value = 'Erreur sync ✗'
-      isSyncing.value = false
+    .on('error', (err: any) => {
+      console.error("Sync error:", err)
+      syncStatus.value = `Erreur sync ✗: ${err.name || err.message}`
     })
 }
 
+// arrête la synchro live (utilisé pour le mode offline)
 const stopLiveSync = () => {
   if (liveSync && liveSync.cancel) {
     liveSync.cancel()
@@ -450,12 +623,13 @@ const stopLiveSync = () => {
   }
 }
 
-const toggleOffline = () => {
+// switch online/offline
+const toggleOffline = async () => {
   isOffline.value = !isOffline.value
 
   if (isOffline.value) {
     stopLiveSync()
-    syncStatus.value = 'Mode Offline'
+    syncStatus.value = 'Offline'
   } else {
     syncStatus.value = 'Retour en ligne...'
 
@@ -463,42 +637,20 @@ const toggleOffline = () => {
       showNextConflict()
     }
 
-    syncBidirectional().then(() => {
-      startLiveSync()
-    })
+    startLiveSync()
   }
 }
 
-const syncBidirectional = async () => {
-  if (!localDB.value || !remoteDB.value || isOffline.value) return
-  
-  syncStatus.value = 'Synchronisation bidirectionnelle...'
-  isSyncing.value = true
-  
-  try {
-    const result = await localDB.value.sync(remoteDB.value)
-    
-    if (result.pull && result.pull.docs) {
-      for (const doc of result.pull.docs) {
-        if (doc._conflicts && doc._conflicts.length > 0) {
-          await handleConflictDetected(doc)
-        }
-      }
-    }
-    
-    syncStatus.value = 'Synchronisé ✓'
-    await fetchAllLocalFromDB()
-  } catch (e) {
-    syncStatus.value = 'Erreur sync ✗'
-  } finally {
-    isSyncing.value = false
-  }
+// enregistre qu'un doc a été modifié en local
+const trackLocalModification = (docId: string, rev: string) => {
+  locallyModifiedRevs.value.set(docId, rev)
 }
 
+// création d’un nouveau post
 const createPost = async () => {
   if (!localDB.value) return
   
-  const doc: any = {
+  const doc: Post = {
     _id: `post:${Date.now()}`,
     type: 'post',
     title: newPost.value.title,
@@ -509,12 +661,17 @@ const createPost = async () => {
   }
   
   try {
-    await localDB.value.put(doc)
+    const result = await localDB.value.put(doc)
+    trackLocalModification(doc._id!, result.rev)
+    
     newPost.value = { title: '', author: '', content: '', date: new Date().toLocaleString(), likes: 0 }
     syncStatus.value = 'Modification locale (sync auto)'
-  } catch (e) {}
+  } catch (e) {
+    console.error("Erreur lors de la création du post:", e)
+  }
 }
 
+// modification d’un post existant (via prompt)
 const updatePost = async (post: Post) => {
   const title = prompt('Nouveau titre:', post.title)
   if (title === null) return
@@ -525,41 +682,59 @@ const updatePost = async (post: Post) => {
     const doc = await localDB.value.get(post._id)
     doc.title = title
     doc.content = content
-    await localDB.value.put(doc)
+    const result = await localDB.value.put(doc)
+    trackLocalModification(post._id!, result.rev)
+    
     syncStatus.value = 'Modification locale (sync auto)'
-  } catch (e) {}
+  } catch (e) {
+    console.error("Erreur lors de la mise à jour du post:", e)
+  }
 }
 
+// suppression d’un post
 const deletePost = async (post: Post) => {
   if (!confirm('Supprimer ce post ?')) return
   
   try {
     const doc = await localDB.value.get(post._id)
     await localDB.value.remove(doc)
+    locallyModifiedRevs.value.delete(post._id!)
+    
     syncStatus.value = 'Suppression locale (sync auto)'
-  } catch (e) {}
+  } catch (e) {
+    console.error("Erreur lors de la suppression du post:", e)
+  }
 }
 
+// gestion du like d’un post
 const likePost = async (post: Post) => {
   try {
     const doc = await localDB.value.get(post._id)
     doc.likes = (doc.likes || 0) + 1
-    await localDB.value.put(doc)
+    const result = await localDB.value.put(doc)
+    trackLocalModification(post._id!, result.rev)
+    
     syncStatus.value = 'Like ajouté (sync auto)'
-  } catch (e) {}
+  } catch (e) {
+    console.error("Erreur lors du like du post:", e)
+  }
 }
 
+// ouvre / ferme la section commentaires d’un post
 const openComments = (post: Post) => {
   activeCommentsPostId.value = activeCommentsPostId.value === post._id ? null : post._id || null
 }
 
+// retourne les commentaires liés à un post
 const commentsByPost = (postId: string | undefined) => {
   if (!postId) return []
   return comments.value.filter(c => c.postId === postId)
 }
 
+// nombre de commentaires d’un post
 const countComments = (postId: string | undefined) => commentsByPost(postId).length
 
+// ajout d’un commentaire pour un post
 const addComment = async (post: Post) => {
   if (!post._id) return
   
@@ -573,12 +748,17 @@ const addComment = async (post: Post) => {
   }
   
   try {
-    await localDB.value.put(doc)
+    const result = await localDB.value.put(doc)
+    trackLocalModification(doc._id!, result.rev)
+    
     newComment.value = { author: '', content: '' }
     syncStatus.value = 'Commentaire ajouté (sync auto)'
-  } catch (e) {}
+  } catch (e) {
+    console.error("Erreur lors de l'ajout du commentaire:", e)
+  }
 }
 
+// modification d’un commentaire
 const updateComment = async (c: CommentDoc) => {
   const content = prompt('Nouveau commentaire:', c.content)
   if (content === null) return
@@ -586,21 +766,98 @@ const updateComment = async (c: CommentDoc) => {
   try {
     const doc = await localDB.value.get(c._id)
     doc.content = content
-    await localDB.value.put(doc)
+    const result = await localDB.value.put(doc)
+    trackLocalModification(c._id!, result.rev)
+    
     syncStatus.value = 'Commentaire modifié (sync auto)'
-  } catch (e) {}
+  } catch (e) {
+    console.error("Erreur lors de la mise à jour du commentaire:", e)
+  }
 }
 
+// suppression d’un commentaire
 const deleteComment = async (c: CommentDoc) => {
   if (!confirm('Supprimer ce commentaire ?')) return
   
   try {
     const doc = await localDB.value.get(c._id)
     await localDB.value.remove(doc)
+    locallyModifiedRevs.value.delete(c._id!)
+    
     syncStatus.value = 'Commentaire supprimé (sync auto)'
-  } catch (e) {}
+  } catch (e) {
+    console.error("Erreur lors de la suppression du commentaire:", e)
+  }
 }
 
+// ajout / remplacement d’un fichier attaché à un post
+const handleFileSelect = async (event: Event, postId?: string) => {
+  if (!postId || !localDB.value) return
+
+  const input = event.target as HTMLInputElement
+  if (!input.files || input.files.length === 0) {
+    console.warn("Aucun fichier sélectionné.")
+    return
+  }
+
+  const file = input.files[0]
+  if (!file) {
+    console.error("Le fichier sélectionné est invalide.")
+    return
+  }
+
+  try {
+    const doc = await localDB.value.get(postId)
+    const result = await localDB.value.putAttachment(doc._id, file.name, doc._rev, file, file.type)
+    trackLocalModification(postId, result.rev)
+    
+    syncStatus.value = 'Média ajouté/remplacé (sync auto)'
+
+    if (attachmentsData.value.has(postId)) {
+      URL.revokeObjectURL(attachmentsData.value.get(postId)!.url)
+      attachmentsData.value.delete(postId)
+    }
+    await fetchAllLocalFromDB()
+  } catch (e) {
+    console.error("Erreur lors de la sauvegarde de l'attachement:", e)
+    syncStatus.value = 'Erreur ajout/remplacement média ✗'
+  } finally {
+    input.value = ''
+  }
+}
+
+// suppression du média lié à un post
+const deleteMediaAttachment = async (post: Post) => {
+  if (!post._id || !localDB.value || !post._attachments) return
+  if (!confirm('Supprimer le média associé à ce post ?')) return
+
+  const attachmentNames = Object.keys(post._attachments)
+  if (attachmentNames.length === 0) {
+    console.warn("Aucun attachement à supprimer pour ce post.")
+    return
+  }
+
+  const attachmentName = attachmentNames[0]
+
+  try {
+    const doc = await localDB.value.get(post._id)
+    const result = await localDB.value.removeAttachment(doc._id, attachmentName, doc._rev)
+    trackLocalModification(post._id, result.rev)
+    
+    syncStatus.value = 'Média supprimé (sync auto)'
+
+    if (attachmentsData.value.has(post._id)) {
+      URL.revokeObjectURL(attachmentsData.value.get(post._id)!.url)
+      attachmentsData.value.delete(post._id)
+    }
+    await fetchAllLocalFromDB()
+  } catch (e) {
+    console.error("Erreur lors de la suppression de l'attachement:", e)
+    syncStatus.value = 'Erreur suppression média ✗'
+  }
+}
+
+// génération en masse de posts "factory"
 const generateFactory = async () => {
   const n = factoryCount.value || 50
   const docs: any[] = []
@@ -618,11 +875,20 @@ const generateFactory = async () => {
   }
   
   try {
-    await localDB.value.bulkDocs(docs)
+    const results = await localDB.value.bulkDocs(docs)
+    results.forEach((result: any, index: number) => {
+      if (result.ok) {
+        trackLocalModification(docs[index]._id, result.rev)
+      }
+    })
+    
     syncStatus.value = `${n} posts générés (sync auto)`
-  } catch (e) {}
+  } catch (e) {
+    console.error("Erreur lors de la génération de posts:", e)
+  }
 }
 
+// applique la recherche + tri sur les posts (via PouchDB find)
 const applySearchSort = async () => {
   if (!localDB.value) return
 
@@ -657,6 +923,7 @@ const applySearchSort = async () => {
     filteredPosts.value = result.docs as Post[]
     showAllPosts.value = false
   } catch (e) {
+    console.warn("Erreur PouchDB find, fallback sur le tri/filtre manuel:", e)
     let list = [...posts.value]
     if (q) {
       list = list.filter(
@@ -677,6 +944,7 @@ const applySearchSort = async () => {
   }
 }
 
+// réinitialise recherche et tri
 const clearSearch = async () => {
   searchQuery.value = ''
   sortBy.value = 'none'
@@ -684,14 +952,19 @@ const clearSearch = async () => {
   showAllPosts.value = false
 }
 
+// bascule top 10 / tous les posts
 const toggleShowAll = () => {
   showAllPosts.value = !showAllPosts.value
 }
 
+// on lance l’init à l’arrivée sur le composant
 onMounted(() => { initDB() })
+
+// nettoyage des listeners et des URLs d’objets
 onBeforeUnmount(() => {
   stopLiveSync()
   if (changesFeed && changesFeed.cancel) changesFeed.cancel()
+  attachmentsData.value.forEach(data => URL.revokeObjectURL(data.url))
 })
 </script>
 
@@ -911,16 +1184,43 @@ input, textarea, select {
 
 .version-card:hover {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  border-color: #13407b;
+}
+
+.version-card.local-version {
+  border-color: #4caf50;
+  background: #f1f8e9;
+}
+
+.version-card.local-version:hover {
+  border-color: #2e7d32;
+}
+
+.version-card.remote-version {
+  border-color: #2196f3;
+  background: #e3f2fd;
+}
+
+.version-card.remote-version:hover {
+  border-color: #1565c0;
 }
 
 .version-card h3 {
   color: #13407b;
   margin-bottom: 1rem;
-  font-size: 1.2rem;
+  font-size: 1.1rem;
   text-align: center;
   padding-bottom: 0.8rem;
   border-bottom: 2px solid #e0e0e0;
+}
+
+.local-version h3 {
+  color: #2e7d32;
+  border-color: #a5d6a7;
+}
+
+.remote-version h3 {
+  color: #1565c0;
+  border-color: #90caf9;
 }
 
 .version-details {
@@ -928,7 +1228,7 @@ input, textarea, select {
   padding: 1rem;
   border-radius: 6px;
   margin-bottom: 1rem;
-  min-height: 200px;
+  min-height: 180px;
 }
 
 .version-details p {
@@ -974,20 +1274,52 @@ input, textarea, select {
   background: #0d47a1;
 }
 
-.conflict-actions {
-  text-align: center;
-  padding-top: 1rem;
-  border-top: 2px solid #e0e0e0;
-}
-
-.btn-cancel {
-  background: #757575;
-  padding: 0.7rem 2rem;
+.media-upload-button {
+  padding: 0.5rem 1.1rem;
   font-size: 1rem;
+  font-weight: 500;
+  background: #28a745;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.btn-cancel:hover {
-  background: #424242;
+.media-upload-button:hover {
+  background: #218838;
+}
+
+.post-media-display {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #f0f7f0;
+  border: 1px solid #c3e6cb;
+  border-radius: 7px;
+  text-align: center;
+}
+
+.post-media-display h4 {
+  color: #28a745;
+  margin-bottom: 0.8rem;
+}
+
+.responsive-media-img,
+.responsive-media-video {
+  max-width: 100%;
+  height: auto;
+  border-radius: 5px;
+  display: block;
+  margin: 0 auto;
+}
+
+.media-info {
+  font-size: 0.95rem;
+  color: #495057;
+  margin-top: 0.5rem;
 }
 
 @media (max-width: 768px) {
